@@ -1,0 +1,16 @@
+# Lightweight lane baseline configuration for the 1280x720 forward camera.
+process_every_n_frames: 3
+roi_top_y: 0.48
+roi_bottom_y: 0.98
+roi_left: 0.02
+roi_right: 0.98
+bev_width: 640
+bev_height: 480
+match_x_threshold: 95.0
+match_curve_rmse: 90.0
+max_missing_frames: 18
+new_lane_min_confidence: 0.20
+solid_support_ratio: 0.58
+yellow_hue_low: 12
+yellow_hue_high: 42
+white_saturation_max: 75
