@@ -1,0 +1,4 @@
+# Real-time output policy. Perception records are never dropped.
+visual_queue_size: 2
+video_fps: 30.0
+video_codec: mp4v

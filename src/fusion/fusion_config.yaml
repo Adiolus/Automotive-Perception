@@ -1,0 +1,7 @@
+# Timestamp and confidence policy for optional-input fusion.
+depth_fps: 30.0
+depth_stale_seconds: 1.0
+auxiliary_stale_seconds: 0.5
+minimum_closing_speed: 0.001
+maximum_ttc_seconds: 120.0
+depth_history_length: 8

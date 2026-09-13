@@ -1,0 +1,27 @@
+# Relative-depth risk policy. Depth Anything values are not metric meters.
+# TTC is therefore a relative TTC proxy and is never a standalone final-risk decision.
+depth_ema_alpha: 0.35
+closing_speed_ema_alpha: 0.35
+ttc_ema_alpha: 0.30
+approach_persistence_frames: 3
+risk_escalation_frames: 3
+risk_deescalation_frames: 5
+critical_score: 0.85
+high_score: 0.65
+medium_score: 0.40
+low_score: 0.20
+ttc_critical_seconds: 1.0
+ttc_high_seconds: 2.0
+ttc_medium_seconds: 4.0
+trajectory_jitter_scale: 25.0
+stale_confidence_factor: 0.55
+# Per-class closing-speed normalization in relative-depth units/frame.
+closing_scale_car: 0.08
+closing_scale_truck: 0.08
+closing_scale_bus: 0.07
+closing_scale_motorcycle: 0.06
+closing_scale_rider: 0.05
+closing_scale_person: 0.04
+closing_scale_autorickshaw: 0.07
+closing_scale_bicycle: 0.04
+closing_scale_default: 0.06

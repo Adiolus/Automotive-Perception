@@ -1,44 +1,102 @@
+# ============================================================
 # Python
+# ============================================================
 __pycache__/
 *.py[cod]
 *.pyo
-.venv/
-venv/
-env/
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Datasets
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# ============================================================
+# Jupyter / IDE
+# ============================================================
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
+
+# ============================================================
+# Python / ML caches
+# ============================================================
+.cache/
+huggingface/
+transformers_cache/
+wandb/
+mlruns/
+
+# ============================================================
+# Raw datasets / downloaded archives
+# ============================================================
+data/raw/
+data/processed/
+data/test/
+data/train/
 road-dataset/
 datasets/
-data/
+dataset/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
 
-# Videos / media
-videos/
-*.mp4
-*.avi
-*.mov
-*.mkv
-
-# YOLO / experiment outputs
-runs/
-wandb/
-*.jpg
-*.jpeg
-*.png
-
-# Model weights - keep these OUT of Git
+# ============================================================
+# Large model weights
+# Keep model binaries outside normal Git history
+# ============================================================
 *.pt
 *.pth
 *.ckpt
 *.onnx
+*.engine
 *.safetensors
+*.bin
 
-# Logs / checkpoints
-lightning_logs/
-*.log
+# ============================================================
+# Generated experiment outputs
+# ============================================================
+runs/
+results/
+outputs/
+logs/
 
-# OS
-.DS_Store
+# ============================================================
+# Video / image artifacts
+# ============================================================
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
 
-# IDE
-.vscode/
-.idea/
+# Generated images
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+
+# ============================================================
+# Third-party cloned repositories
+# ============================================================
+external/
+
+# ============================================================
+# OS / temporary files
+# ============================================================
+*.swp
+*.swo
+*~
+tmp/
+temp/

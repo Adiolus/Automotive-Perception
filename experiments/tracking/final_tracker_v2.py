@@ -7,6 +7,9 @@ import csv
 import time
 import subprocess
 import shutil
+import torch
+from PIL import Image
+from torchvision.models import ResNet18_Weights, resnet18
 
 
 # ============================================================
@@ -65,17 +68,17 @@ OUTPUT_DIR = Path(
 
 RAW_OUTPUT = (
     OUTPUT_DIR /
-    "FINAL_TRACKER_V2_raw.mp4"
+    "FINAL_TRACKER_V2_ownership_raw.mp4"
 )
 
 FINAL_OUTPUT = (
     OUTPUT_DIR /
-    "FINAL_TRACKER_V2_H264.mp4"
+    "FINAL_TRACKER_V2_ownership_H264.mp4"
 )
 
 CSV_OUTPUT = (
     OUTPUT_DIR /
-    "FINAL_TRACKER_V2.csv"
+    "FINAL_TRACKER_V2_ownership.csv"
 )
 
 
@@ -85,6 +88,36 @@ CSV_OUTPUT = (
 
 CONF_THRESHOLD = 0.35
 IMAGE_SIZE = 960
+
+# Experiment-only input hygiene. The checkpoint contains classes that are
+# useful for detection but are not physical traffic objects to track.
+TRACKABLE_CLASS_NAMES = {
+    "person",
+    "rider",
+    "motorcycle",
+    "bicycle",
+    "autorickshaw",
+    "car",
+    "truck",
+    "bus",
+    "vehicle_fallback",
+}
+
+DUPLICATE_IOU_THRESHOLD = 0.50
+
+OWNERSHIP_IOU_THRESHOLD = 0.70
+
+REID_AMBIGUITY_IOU = 0.20
+
+REID_AMBIGUITY_CENTER_RATIO = 1.5
+
+REID_LOST_CENTER_RATIO = 5.0
+
+ENABLE_REID_EXPERIMENT = False
+
+ENABLE_TRAJECTORY_EXPERIMENT = False
+
+TRAJECTORY_COST_WEIGHT = 0.15
 
 
 # ============================================================
@@ -261,6 +294,33 @@ def box_iou(a, b):
         return 0.0
 
     return intersection / union
+
+
+def suppress_duplicate_detections(detections):
+
+    ordered = sorted(
+        detections,
+        key=lambda detection: detection["conf"],
+        reverse=True,
+    )
+
+    kept = []
+
+    for detection in ordered:
+
+        duplicate = any(
+            detection["cls"] == previous["cls"]
+            and box_iou(
+                detection["bbox"],
+                previous["bbox"],
+            ) >= DUPLICATE_IOU_THRESHOLD
+            for previous in kept
+        )
+
+        if not duplicate:
+            kept.append(detection)
+
+    return kept
 
 
 # ============================================================
@@ -525,6 +585,89 @@ def appearance_similarity(
     )
 
 
+class LightweightEmbedding:
+
+    def __init__(self):
+
+        weights = ResNet18_Weights.DEFAULT
+
+        self.device = torch.device(
+            "mps"
+            if torch.backends.mps.is_available()
+            else "cpu"
+        )
+
+        self.preprocess = weights.transforms()
+
+        self.model = resnet18(
+            weights=weights
+        )
+
+        self.model.fc = torch.nn.Identity()
+
+        self.model = (
+            self.model.to(self.device)
+            .eval()
+        )
+
+        self.inference_count = 0
+
+    def encode(self, frame, boxes):
+
+        crops = []
+
+        height, width = frame.shape[:2]
+
+        for box in boxes:
+
+            x1, y1, x2, y2 = box.astype(int)
+
+            x1 = max(0, min(width - 1, x1))
+            y1 = max(0, min(height - 1, y1))
+            x2 = max(x1 + 1, min(width, x2))
+            y2 = max(y1 + 1, min(height, y2))
+
+            crop = frame[y1:y2, x1:x2]
+
+            if crop.size == 0:
+                crop = frame[0:1, 0:1]
+
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            crops.append(
+                self.preprocess(Image.fromarray(rgb))
+            )
+
+        if not crops:
+            return []
+
+        batch = torch.stack(crops).to(self.device)
+
+        with torch.inference_mode():
+            embeddings = self.model(batch)
+
+        embeddings = torch.nn.functional.normalize(
+            embeddings,
+            dim=1,
+        )
+
+        self.inference_count += len(crops)
+
+        return [
+            embedding.detach().cpu().numpy().astype(np.float32)
+            for embedding in embeddings
+        ]
+
+
+def embedding_similarity(first, second):
+
+    if first is None or second is None:
+        return None
+
+    score = float(np.dot(first, second))
+
+    return float(np.clip(score, 0.0, 1.0))
+
+
 # ============================================================
 # TRACK
 # ============================================================
@@ -562,6 +705,10 @@ class Track:
         self.conf = detection[
             "conf"
         ]
+
+        self.embedding = detection.get(
+            "embedding"
+        )
 
         self.age = 1
 
@@ -725,6 +872,11 @@ class Track:
             ]
         )
 
+        if detection.get("embedding") is not None:
+            self.embedding = detection[
+                "embedding"
+            ]
+
         self.hits += 1
 
         self.age += 1
@@ -851,6 +1003,14 @@ class IdentityTracker:
 
         self.total_new_ids = 0
 
+        self.reid = (
+            LightweightEmbedding()
+            if ENABLE_REID_EXPERIMENT
+            else None
+        )
+
+        self.reid_frames = 0
+
     # --------------------------------------------------------
     # CLASS
     # --------------------------------------------------------
@@ -874,6 +1034,60 @@ class IdentityTracker:
             self.class_name(cls)
             in PERSON_CLASSES
         )
+
+    def reid_is_needed(self, detections):
+
+        for track in self.active:
+
+            if track.missed > 0 or track.hits < 3:
+                continue
+
+            candidates = []
+            predicted = track.predicted_box()
+            scale = max(
+                25.0,
+                float(
+                    np.linalg.norm(
+                        box_size(predicted)
+                    )
+                ),
+            )
+
+            for detection in detections:
+
+                if track.cls != detection["cls"]:
+                    continue
+
+                overlap = box_iou(
+                    predicted,
+                    detection["bbox"],
+                )
+                distance = float(
+                    np.linalg.norm(
+                        track.predicted_center()
+                        - detection["center"]
+                    )
+                )
+
+                if (
+                    overlap >= MIN_IOU
+                    or distance / scale <= MAX_CENTER_RATIO
+                ):
+                    candidates.append(detection)
+
+            for first_index, first in enumerate(candidates):
+
+                for second in candidates[first_index + 1 :]:
+
+                    if (
+                        box_iou(
+                            first["bbox"],
+                            second["bbox"],
+                        ) >= REID_AMBIGUITY_IOU
+                    ):
+                        return True
+
+        return False
 
     # --------------------------------------------------------
     # CREATE
@@ -950,12 +1164,39 @@ class IdentityTracker:
             distance / scale
         )
 
+        measured_velocity = (
+            detection["center"]
+            - track.center
+        )
+
+        expected_velocity = np.clip(
+            track.velocity,
+            -80.0,
+            80.0,
+        )
+
+        motion_error = min(
+            float(
+                np.linalg.norm(
+                    measured_velocity
+                    - expected_velocity
+                )
+            )
+            / scale,
+            3.0,
+        )
+
         appearance = (
             track.best_appearance_similarity(
                 detection[
                     "appearance"
                 ]
             )
+        )
+
+        reid = embedding_similarity(
+            track.embedding,
+            detection.get("embedding"),
         )
 
         if (
@@ -973,15 +1214,43 @@ class IdentityTracker:
             track.cls
         ):
 
-            iou_w = 0.50
-            center_w = 0.25
-            appearance_w = 0.25
+            if ENABLE_TRAJECTORY_EXPERIMENT and reid is None:
+                iou_w = 0.35
+                center_w = 0.20
+                appearance_w = 0.30
+                motion_w = TRAJECTORY_COST_WEIGHT
+            else:
+                iou_w = 0.40
+                center_w = 0.20
+                appearance_w = 0.20
+                motion_w = 0.0
+            reid_w = 0.20
 
         else:
 
-            iou_w = 0.60
-            center_w = 0.25
-            appearance_w = 0.15
+            if ENABLE_TRAJECTORY_EXPERIMENT and reid is None:
+                iou_w = 0.45
+                center_w = 0.20
+                appearance_w = 0.20
+                motion_w = TRAJECTORY_COST_WEIGHT
+            else:
+                iou_w = 0.50
+                center_w = 0.20
+                appearance_w = 0.10
+                motion_w = 0.0
+            reid_w = 0.20
+
+        if reid is None:
+            reid_w = 0.0
+            if not ENABLE_TRAJECTORY_EXPERIMENT:
+                iou_w = 0.50 if self.is_person(track.cls) else 0.60
+                center_w = 0.25
+                appearance_w = 0.25 if self.is_person(track.cls) else 0.15
+            motion_w = (
+                TRAJECTORY_COST_WEIGHT
+                if ENABLE_TRAJECTORY_EXPERIMENT
+                else 0.0
+            )
 
         cost = (
             iou_w
@@ -996,6 +1265,13 @@ class IdentityTracker:
             +
             appearance_w
             * (1.0 - appearance)
+            + motion_w
+            * min(
+                motion_error,
+                1.0,
+            )
+            + reid_w
+            * (1.0 - (reid or 0.0))
         )
 
         # Stable overlapping detections get a major bonus.
@@ -1062,6 +1338,11 @@ class IdentityTracker:
             )
         )
 
+        reid = embedding_similarity(
+            track.embedding,
+            detection.get("embedding"),
+        )
+
         # Lost people need strong appearance evidence.
         if self.is_person(
             track.cls
@@ -1070,18 +1351,35 @@ class IdentityTracker:
             if (
                 appearance < 0.48
                 and overlap < 0.03
+                and (reid is None or reid < 0.45)
             ):
                 return 1e6
 
-            iou_w = 0.30
-            center_w = 0.20
-            appearance_w = 0.50
+            iou_w = 0.25
+            center_w = 0.15
+            appearance_w = 0.35
+            reid_w = 0.25
 
         else:
 
-            iou_w = 0.45
-            center_w = 0.25
-            appearance_w = 0.30
+            iou_w = 0.40
+            center_w = 0.20
+            appearance_w = 0.20
+            reid_w = 0.20
+
+        if reid is None:
+            reid_w = 0.0
+            if not ENABLE_REID_EXPERIMENT:
+                if self.is_person(track.cls):
+                    iou_w = 0.30
+                    center_w = 0.20
+                    appearance_w = 0.50
+                else:
+                    iou_w = 0.45
+                    center_w = 0.25
+                    appearance_w = 0.30
+            else:
+                appearance_w += 0.20
 
         if (
             normalized_distance
@@ -1105,6 +1403,8 @@ class IdentityTracker:
             +
             appearance_w
             * (1.0 - appearance)
+            + reid_w
+            * (1.0 - (reid or 0.0))
         )
 
     # --------------------------------------------------------
@@ -1150,6 +1450,17 @@ class IdentityTracker:
                     ]
                 )
             )
+
+            reid = embedding_similarity(
+                track.embedding,
+                detection.get("embedding"),
+            )
+
+            if reid is not None:
+                appearance = (
+                    0.55 * appearance
+                    + 0.45 * reid
+                )
 
             if (
                 appearance
@@ -1352,6 +1663,25 @@ class IdentityTracker:
                 ],
             )
 
+        if (
+            ENABLE_REID_EXPERIMENT
+            and detections
+            and self.reid_is_needed(detections)
+        ):
+
+            embeddings = self.reid.encode(
+                frame,
+                [detection["bbox"] for detection in detections],
+            )
+
+            for detection, embedding in zip(
+                detections,
+                embeddings,
+            ):
+                detection["embedding"] = embedding
+
+            self.reid_frames += 1
+
         matched_active = set()
 
         matched_detections = set()
@@ -1361,24 +1691,81 @@ class IdentityTracker:
         # ACTIVE TRACKS
         # ====================================================
 
+        locked_active = set()
+        locked_detections = set()
+
+        # Preserve an unambiguous existing owner before global assignment.
+        # This prevents nearly identical boxes from swapping IDs frame to frame.
+        ownership_candidates = []
+
+        for ti, track in enumerate(self.active):
+
+            if track.missed > 0:
+                continue
+
+            for di, detection in enumerate(detections):
+
+                if track.cls != detection["cls"]:
+                    continue
+
+                overlap = box_iou(
+                    track.bbox,
+                    detection["bbox"],
+                )
+
+                if overlap >= OWNERSHIP_IOU_THRESHOLD:
+                    ownership_candidates.append(
+                        (overlap, ti, di)
+                    )
+
+        ownership_candidates.sort(reverse=True)
+
+        for overlap, ti, di in ownership_candidates:
+
+            if ti in locked_active or di in locked_detections:
+                continue
+
+            self.active[ti].update(
+                detections[di],
+                frame_idx,
+            )
+
+            locked_active.add(ti)
+            locked_detections.add(di)
+            matched_active.add(ti)
+            matched_detections.add(di)
+            self.total_matches += 1
+
         if self.active and detections:
+
+            remaining_active = [
+                ti
+                for ti in range(len(self.active))
+                if ti not in locked_active
+            ]
+
+            remaining_detections = [
+                di
+                for di in range(len(detections))
+                if di not in locked_detections
+            ]
 
             cost = np.full(
                 (
-                    len(self.active),
-                    len(detections),
+                    len(remaining_active),
+                    len(remaining_detections),
                 ),
                 1e6,
                 dtype=np.float32,
             )
 
-            for ti, track in enumerate(
-                self.active
-            ):
+            for row, ti in enumerate(remaining_active):
 
-                for di, detection in enumerate(
-                    detections
-                ):
+                track = self.active[ti]
+
+                for column, di in enumerate(remaining_detections):
+
+                    detection = detections[di]
 
                     if (
                         track.cls
@@ -1389,10 +1776,7 @@ class IdentityTracker:
 
                         continue
 
-                    cost[
-                        ti,
-                        di
-                    ] = (
+                    cost[row, column] = (
                         self.active_cost(
                             track,
                             detection,
@@ -1405,25 +1789,24 @@ class IdentityTracker:
                 )
             )
 
-            for ti, di in zip(
+            for row, column in zip(
                 rows,
                 cols,
             ):
 
                 if (
                     cost[
-                        ti,
-                        di
+                        row,
+                        column
                     ] >= 1e5
                 ):
                     continue
 
-                self.active[
-                    ti
-                ].update(
-                    detections[
-                        di
-                    ],
+                ti = remaining_active[row]
+                di = remaining_detections[column]
+
+                self.active[ti].update(
+                    detections[di],
                     frame_idx,
                 )
 
@@ -2098,6 +2481,14 @@ while True:
             confidences,
         ):
 
+            class_name = model.names.get(
+                int(cls),
+                str(cls),
+            )
+
+            if class_name not in TRACKABLE_CLASS_NAMES:
+                continue
+
             detections.append(
                 {
                     "bbox": box.astype(
@@ -2110,6 +2501,10 @@ while True:
                     ),
                 }
             )
+
+    detections = suppress_duplicate_detections(
+        detections
+    )
 
     total_detections += len(
         detections
@@ -2278,6 +2673,21 @@ print(
 print(
     f"Processing FPS:             "
     f"{frame_idx / max(elapsed, 1e-6):.2f}"
+)
+
+print(
+    f"ReID inference crops:       "
+    f"{tracker.reid.inference_count if tracker.reid else 0}"
+)
+
+print(
+    f"ReID frames:                "
+    f"{tracker.reid_frames}"
+)
+
+print(
+    f"ReID frame percentage:      "
+    f"{100.0 * tracker.reid_frames / max(frame_idx, 1):.2f}%"
 )
 
 print("")
