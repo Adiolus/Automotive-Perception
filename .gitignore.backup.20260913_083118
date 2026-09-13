@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Datasets
+road-dataset/
+datasets/
+data/
+
+# Videos / media
+videos/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# YOLO / experiment outputs
+runs/
+wandb/
+*.jpg
+*.jpeg
+*.png
+
+# Model weights - keep these OUT of Git
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# Logs / checkpoints
+lightning_logs/
+*.log
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
