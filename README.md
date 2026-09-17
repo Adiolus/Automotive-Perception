@@ -19,7 +19,3 @@ Develop a vision-based system capable of:
 
 - Aditya
 - Balaji
-
-## Current Stage
-
-Stage 1 — Object Detection
