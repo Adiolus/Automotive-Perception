@@ -1,0 +1,83 @@
+{
+  "test0_normal": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test0_normal.txt",
+    "tp": 30089.0,
+    "fp": 2532.0,
+    "fn": 2688.0,
+    "precision": 0.922381,
+    "recall": 0.917991,
+    "Fmeasure": 0.920181
+  },
+  "test1_crowd": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test1_crowd.txt",
+    "tp": 20265.0,
+    "fp": 6656.0,
+    "fn": 7738.0,
+    "precision": 0.752758,
+    "recall": 0.723672,
+    "Fmeasure": 0.737929
+  },
+  "test2_hlight": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test2_hlight.txt",
+    "tp": 1029.0,
+    "fp": 558.0,
+    "fn": 656.0,
+    "precision": 0.648393,
+    "recall": 0.610682,
+    "Fmeasure": 0.628973
+  },
+  "test3_shadow": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test3_shadow.txt",
+    "tp": 2066.0,
+    "fp": 752.0,
+    "fn": 810.0,
+    "precision": 0.733144,
+    "recall": 0.718359,
+    "Fmeasure": 0.725676
+  },
+  "test4_noline": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test4_noline.txt",
+    "tp": 6231.0,
+    "fp": 5758.0,
+    "fn": 7790.0,
+    "precision": 0.519726,
+    "recall": 0.444405,
+    "Fmeasure": 0.479123
+  },
+  "test5_arrow": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test5_arrow.txt",
+    "tp": 2734.0,
+    "fp": 329.0,
+    "fn": 448.0,
+    "precision": 0.892589,
+    "recall": 0.859208,
+    "Fmeasure": 0.87558
+  },
+  "test6_curve": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test6_curve.txt",
+    "tp": 832.0,
+    "fp": 270.0,
+    "fn": 480.0,
+    "precision": 0.754991,
+    "recall": 0.634146,
+    "Fmeasure": 0.689312
+  },
+  "test7_cross": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test7_cross.txt",
+    "tp": 0.0,
+    "fp": 1996.0,
+    "fn": 0.0,
+    "precision": 0.0,
+    "recall": -1.0,
+    "Fmeasure": 0.0
+  },
+  "test8_night": {
+    "file": "/Users/adityachinchore/automotive-perception/runs/ufld_culane_eval/txt/test8_night.txt",
+    "tp": 14335.0,
+    "fp": 5794.0,
+    "fn": 6695.0,
+    "precision": 0.712157,
+    "recall": 0.681645,
+    "Fmeasure": 0.696567
+  }
+}
