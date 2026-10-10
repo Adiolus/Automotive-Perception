@@ -1,0 +1,7 @@
+{
+    "p50_latency_ms": 0.4273000013199635,
+    "p95_latency_ms": 0.6023450016073184,
+    "mean_latency_ms": 0.5218030000348032,
+    "total_frames_processed": 300,
+    "stale_handling": "Supported. Age calculated strictly via frame_id delta."
+}
