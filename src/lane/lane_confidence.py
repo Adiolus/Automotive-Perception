@@ -1,9 +1,11 @@
 """Lane confidence components and visibility quality."""
 
 
-def lane_confidence(detection, temporal, geometry, bev, continuity, visibility):
-    values = [detection, temporal, geometry, bev, continuity, visibility]
-    return max(0.0, min(1.0, sum(values) / len(values)))
+def lane_confidence(*evidence):
+    """Cap confidence at the weakest observed lane-evidence component."""
+    if not evidence:
+        return 0.0
+    return max(0.0, min(1.0, min(evidence)))
 
 
 def visibility_quality(pixel_count, occluded=False):

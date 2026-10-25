@@ -328,9 +328,14 @@ def test_segmentation_worker_has_bounded_queue_and_reports_worker_errors():
 
 
 def test_depth_worker_replaces_a_queued_stale_request(monkeypatch):
+    torch_stub = types.ModuleType("torch")
+    pil_stub = types.ModuleType("PIL")
+    pil_stub.Image = object
     transformers_stub = types.ModuleType("transformers")
     transformers_stub.AutoImageProcessor = object
     transformers_stub.AutoModelForDepthEstimation = object
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setitem(sys.modules, "PIL", pil_stub)
     monkeypatch.setitem(sys.modules, "transformers", transformers_stub)
     depth_module = importlib.import_module("src.depth.run_depth")
     worker = object.__new__(depth_module.DepthWorker)

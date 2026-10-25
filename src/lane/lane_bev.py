@@ -6,14 +6,15 @@ import numpy as np
 
 def default_homography(width, height, config):
     source = np.float32([
-        [config["roi_left"] * width, config["roi_top_y"] * height],
-        [config["roi_right"] * width, config["roi_top_y"] * height],
-        [config["roi_right"] * width, config["roi_bottom_y"] * height],
-        [config["roi_left"] * width, config["roi_bottom_y"] * height],
+        [config["roi_top_left"] * width, config["roi_top_y"] * height],
+        [config["roi_top_right"] * width, config["roi_top_y"] * height],
+        [config["roi_bottom_right"] * width, config["roi_bottom_y"] * height],
+        [config["roi_bottom_left"] * width, config["roi_bottom_y"] * height],
     ])
     target = np.float32([
-        [0, 0], [config["bev_width"], 0],
-        [config["bev_width"], config["bev_height"]], [0, config["bev_height"]],
+        [0, 0], [config["bev_width"] - 1, 0],
+        [config["bev_width"] - 1, config["bev_height"] - 1],
+        [0, config["bev_height"] - 1],
     ])
     return cv2.getPerspectiveTransform(source, target)
 

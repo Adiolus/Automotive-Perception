@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
 
 
 @dataclass
@@ -206,11 +205,6 @@ class LaneTracker:
             - self._bottom_x(b)
         )
 
-        bottom_dist /= max(
-            float(self.width),
-            1.0,
-        )
-
         angle_dist = abs(
             self._heading(a)
             - self._heading(b)
@@ -275,6 +269,68 @@ class LaneTracker:
 
         return result[: self.max_lanes]
 
+    def _ordered_matches(
+        self,
+        active_indices: List[int],
+        detections: List[LaneDetection],
+    ):
+        track_count = len(active_indices)
+        detection_count = len(detections)
+        costs = [[None] * detection_count for _ in range(track_count)]
+        for track_index, slot_index in enumerate(active_indices):
+            track = self.tracks[slot_index]
+            assert track is not None
+            for detection_index, detection in enumerate(detections):
+                cost = self._cost(track, detection)
+                if cost <= self.match_threshold:
+                    costs[track_index][detection_index] = cost
+
+        skip_cost = self.match_threshold
+        dp = [
+            [float("inf")] * (detection_count + 1)
+            for _ in range(track_count + 1)
+        ]
+        action = [
+            [None] * (detection_count + 1)
+            for _ in range(track_count + 1)
+        ]
+        dp[0][0] = 0.0
+        for i in range(track_count + 1):
+            for j in range(detection_count + 1):
+                current = dp[i][j]
+                if current == float("inf"):
+                    continue
+                if i < track_count and current + skip_cost < dp[i + 1][j]:
+                    dp[i + 1][j] = current + skip_cost
+                    action[i + 1][j] = "track"
+                if j < detection_count and current + skip_cost < dp[i][j + 1]:
+                    dp[i][j + 1] = current + skip_cost
+                    action[i][j + 1] = "detection"
+                if (
+                    i < track_count
+                    and j < detection_count
+                    and costs[i][j] is not None
+                    and current + costs[i][j] < dp[i + 1][j + 1]
+                ):
+                    dp[i + 1][j + 1] = current + costs[i][j]
+                    action[i + 1][j + 1] = "match"
+
+        matches = []
+        i, j = track_count, detection_count
+        while i or j:
+            step = action[i][j]
+            if step == "match":
+                matches.append((i - 1, j - 1))
+                i -= 1
+                j -= 1
+            elif step == "track":
+                i -= 1
+            elif step == "detection":
+                j -= 1
+            else:
+                break
+        return list(reversed(matches))
+
     def _initialize(
         self,
         detections: List[LaneDetection],
@@ -324,13 +380,14 @@ class LaneTracker:
             detections
         )
 
-        active_indices = [
-            i
-            for i, track in enumerate(
-                self.tracks
-            )
-            if track is not None
-        ]
+        active_indices = sorted(
+            (
+                i
+                for i, track in enumerate(self.tracks)
+                if track is not None
+            ),
+            key=lambda i: self._bottom_x(self.tracks[i].curve),
+        )
 
         if not active_indices:
 
@@ -344,57 +401,7 @@ class LaneTracker:
         matched_detections = set()
 
         if detections:
-
-            cost_matrix = np.full(
-                (
-                    len(active_indices),
-                    len(detections),
-                ),
-                1e6,
-                dtype=np.float32,
-            )
-
-            for r, slot_idx in enumerate(
-                active_indices
-            ):
-
-                track = self.tracks[
-                    slot_idx
-                ]
-
-                assert track is not None
-
-                for c, detection in enumerate(
-                    detections
-                ):
-
-                    cost_matrix[
-                        r, c
-                    ] = self._cost(
-                        track,
-                        detection,
-                    )
-
-            rows, cols = (
-                linear_sum_assignment(
-                    cost_matrix
-                )
-            )
-
-            for r, c in zip(
-                rows,
-                cols
-            ):
-
-                cost = float(
-                    cost_matrix[
-                        r, c
-                    ]
-                )
-
-                if cost > self.match_threshold:
-                    continue
-
+            for r, c in self._ordered_matches(active_indices, detections):
                 slot_idx = active_indices[
                     r
                 ]
@@ -523,4 +530,4 @@ class LaneTracker:
                 track
             )
 
-        return result
+        return sorted(result, key=lambda track: self._bottom_x(track.curve))

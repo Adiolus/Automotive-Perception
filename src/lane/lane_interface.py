@@ -15,6 +15,7 @@ class LaneState:
     ego_lane_offset: Optional[float]
     lane_boundary_distance: Optional[float]
     confidence: float
+    ego_lane_boundary_ids: Optional[tuple[int, int]] = None
 
 
 @dataclass
