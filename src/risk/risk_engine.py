@@ -56,8 +56,35 @@ class RiskEngine:
         track_id = str(fused["track_id"])
         state = self.states.setdefault(track_id, TrackRiskState())
         depth = optional_float(fused.get("depth"))
-        closing = optional_float(fused.get("closing_speed"))
-        raw_ttc = optional_float(fused.get("ttc")) if fused.get("ttc_valid") == "True" else None
+        depth_type = fused.get("depth_type", "relative")
+        closing_speed_type = fused.get(
+            "closing_speed_type",
+            "relative_per_frame" if depth_type == "relative" else "unknown",
+        )
+        closing_value = optional_float(fused.get("closing_speed"))
+        closing = (
+            closing_value
+            if closing_speed_type == "relative_per_frame"
+            else None
+        )
+        ttc_flag = parse_bool(fused.get("ttc_valid"))
+        ttc_candidate = optional_float(fused.get("ttc"))
+        metric_ttc_inputs = (
+            fused.get("depth_type", "relative") == "metric"
+            and parse_bool(fused.get("depth_change_per_second"))
+        )
+        ttc_valid = (
+            ttc_flag and metric_ttc_inputs
+            and ttc_candidate is not None and ttc_candidate > 0.0
+        )
+        raw_ttc = ttc_candidate if ttc_valid else None
+        ttc_reason = fused.get("ttc_reason")
+        if ttc_flag and not ttc_valid:
+            ttc_reason = (
+                "requires metric depth and per-second depth change"
+                if not metric_ttc_inputs
+                else "invalid or missing TTC value"
+            )
         if depth is not None:
             state.depth_history.append(depth)
         if closing is not None:
@@ -68,8 +95,11 @@ class RiskEngine:
         smoothed_depth = ema(state.depth_history, self.config.depth_ema_alpha)
         smoothed_closing = ema(state.closing_history, self.config.closing_speed_ema_alpha)
         filtered_ttc = ema(state.ttc_history, self.config.ttc_ema_alpha)
-        approaching = smoothed_closing is not None and smoothed_closing > 0.0
-        current_ttc = filtered_ttc if raw_ttc is not None and approaching else None
+        approaching = (
+            (smoothed_closing is not None and smoothed_closing > 0.0)
+            or (ttc_valid and raw_ttc is not None)
+        )
+        current_ttc = filtered_ttc if ttc_valid and raw_ttc is not None else None
         state.approach_frames = state.approach_frames + 1 if approaching else 0
         persistence = min(
             1.0,
@@ -123,11 +153,15 @@ class RiskEngine:
         return {
             **fused,
             "class_name": fused.get("class_name", fused.get("class", "unknown")),
+            "closing_speed": closing,
+            "closing_speed_type": closing_speed_type,
             "smoothed_depth": smoothed_depth,
             "smoothed_closing_speed": smoothed_closing,
             "raw_ttc": raw_ttc,
             "filtered_ttc": filtered_ttc,
             "ttc": current_ttc,
+            "ttc_valid": ttc_valid,
+            "ttc_reason": ttc_reason,
             "approaching": approaching,
             "approach_persistence_frames": state.approach_frames,
             "trajectory_stability": trajectory_stability,
@@ -224,6 +258,12 @@ def optional_float(value):
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes")
 
 
 def as_object(value, default):

@@ -1,25 +1,35 @@
-# Semantic Segmentation Module Report
+# Semantic Segmentation Report
 
-1. **Model Architecture**: SegFormer (`nvidia/mit-b0`)
-2. **Checkpoint**: `lightning_logs/version_2/checkpoints/epoch=9-step=34970.ckpt`
-3. **Number of Classes**: 41 output logits (mapped to 26 active Level 3 IDs)
-4. **Class Mapping**: IDD Level 3 taxonomy (`src/segmentation/class_mapping.py`)
-5. **Ignore Index**: 255
-6. **Validation Metrics**: Ground truth pixel masks are not packaged with raw driving video (`huh.mp4` / `indian_road.mp4`); qualitative inspection shows coherent boundary isolation across road, vehicles, riders, vegetation, and sky.
-7. **Input Resolution**: 1280x720 (resized to 512x512 for inference)
-8. **Output Mask Resolution**: 1280x720 (`.npy` integer arrays)
-9. **Raw Segmentation FPS**: ~22–26 FPS
-10. **Selected Asynchronous Schedule**: Sample every 6 frames
-11. **Effective Segmentation Update Rate**: 5 FPS (leaves full headroom for YOLO + tracking at 30 FPS)
-12. **Frame Alignment Percentage**: 100% (aligned 1:1 via integer indices and timestamps)
-13. **Per-Track Semantic Context Availability**: Supported via `get_track_semantic_context()` in `src/segmentation/segmentation_interface.py`
-14. **Drivable-Region Extraction Method**: Boolean masking over `DRIVABLE_IDS = {0, 1}` with static 15% bottom hood crop (`y > 0.85 * H` set to ignore index 255)
-15. **Major Segmentation Failure Modes**:
-    * Heavy cast shadows under overpasses occasionally trigger ambiguous obstacle fallbacks.
-    * Dense clusters of two-wheelers can exhibit slight boundary blending at wheel-road contact points.
-16. **Exact Output Paths**:
-    * Masks: `runs/segmentation_eval/masks/frame_*.npy`
-    * Metadata: `runs/segmentation_eval/metadata.csv`
-    * Visualization: `runs/segmentation_eval/segmentation_visualization.mp4`
-17. **Reproduction Command**:
-    `py src/segmentation/run_segmentation.py`
+## Current implementation
+
+- Architecture: SegFormer MiT-B0, initialized from `nvidia/mit-b0`.
+- Local checkpoint: `models/segmentation/epoch=9-step=34970.ckpt`.
+- Taxonomy: 41 IDD class IDs, defined in
+  [`class_mapping.py`](../../../src/fusion/class_mapping.py). Semantic IDs are
+  distinct from YOLO detection class labels.
+- Inference: source video frames are processed asynchronously; the integer
+  mask is resized to the source frame dimensions before object association.
+- Fusion entry point: [`run_fusion.py`](../../../src/fusion/run_fusion.py)
+  with `--semantic-fusion`; object ROI association is implemented in
+  [`semantic_object_fusion.py`](../../../src/fusion/semantic_object_fusion.py).
+- Output quality: semantic context is advisory. The reported confidence is a
+  dominant-pixel fraction adjusted for mask age, not calibrated model
+  confidence. No ground-truth pixel annotations for the evaluated road video
+  were available, and sampled class disagreements mean semantic labels must
+  not replace YOLO labels.
+
+## Current measured run
+
+On the 1,801-frame `indian_road.mp4` staged fusion run, SegFormer completed
+360 of 361 submitted requests, with one dropped request and no worker errors.
+The raw inference rate was 16.67 FPS and the effective update rate was 6.00 Hz.
+Of 19,794 tracker records, 19,689 received an accepted mask context, 94 had no
+result, and 11 masks were expired by the configured 10-frame age limit. All
+accepted contexts came from an earlier frame; they were age-bounded and
+freshness-decayed.
+
+These are asynchronous segmentation-stage figures, not end-to-end perception
+FPS. The tracked-object and depth inputs were saved artifacts, and the
+segmentation results were not ground-truth validated. Details, commands,
+depth/TTC limitations, and lane audit are in
+[`SEMANTIC_FUSION_INTEGRATION.md`](./SEMANTIC_FUSION_INTEGRATION.md).

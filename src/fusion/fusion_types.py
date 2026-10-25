@@ -29,6 +29,8 @@ class DepthObservation:
     trend: str = "unknown"
     source_frame: Optional[int] = None
     source_age_frames: Optional[int] = None
+    depth_type: str = "relative"
+    depth_change_per_second: bool = False
 
 
 @dataclass
@@ -61,11 +63,14 @@ class FusedTrackRecord:
     velocity: dict[str, float]
     trajectory: list[list[float]]
     depth: Optional[float]
+    depth_type: str
     depth_quality: Optional[float]
     depth_change: Optional[float]
+    depth_change_per_second: bool
     depth_history: list[float]
     depth_trend: str
     closing_speed: Optional[float]
+    closing_speed_type: str
     ttc: Optional[float]
     ttc_valid: bool
     ttc_reason: str
@@ -80,6 +85,11 @@ class FusedTrackRecord:
     risk_inputs: dict[str, Any]
     data_age: dict[str, Optional[float]]
     staleness: dict[str, str]
+    semantic_class_id: Optional[int] = None
+    semantic_distribution: dict[int, float] = field(default_factory=dict)
+    road_contact: Optional[bool] = None
+    sidewalk_contact: Optional[bool] = None
+    segmentation_age_frames: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

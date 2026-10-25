@@ -40,12 +40,12 @@ class FusionEngine:
 
     def __init__(self, config: FusionConfig):
         self.config = config
-        self.depth_by_track: dict[str, list[DepthObservation]] = defaultdict(list)
+        self.depth_by_track: dict[str, DepthObservation] = {}
         self.depth_history: dict[str, deque[float]] = defaultdict(
             lambda: deque(maxlen=config.depth_history_length)
         )
-        self.segmentation: list[SegmentationObservation] = []
-        self.lanes: list[LaneObservation] = []
+        self.segmentation: deque[SegmentationObservation] = deque(maxlen=64)
+        self.lanes: deque[LaneObservation] = deque(maxlen=64)
         self.metrics = {
             "tracking_records": 0,
             "depth_joins": 0,
@@ -60,7 +60,9 @@ class FusionEngine:
         self.track_ids = set()
 
     def add_depth(self, observation: DepthObservation) -> None:
-        self.depth_by_track[observation.track_id].append(observation)
+        latest = self.depth_by_track.get(observation.track_id)
+        if latest is None or observation.timestamp >= latest.timestamp:
+            self.depth_by_track[observation.track_id] = observation
 
     def add_segmentation(self, observation: SegmentationObservation) -> None:
         self.segmentation.append(observation)
@@ -73,22 +75,21 @@ class FusionEngine:
         self.track_ids.add(tracking.track_id)
         depth = self._latest_depth(tracking)
         depth_value = depth.depth if depth else None
+        depth_type = depth.depth_type if depth else "relative"
         depth_quality = depth.quality if depth else None
         depth_change = depth.depth_change if depth else None
+        depth_change_per_second = bool(depth and depth.depth_change_per_second)
         depth_history = list(self.depth_history[tracking.track_id])
         if depth and depth_value is not None and math.isfinite(depth_value):
             self.depth_history[tracking.track_id].append(depth_value)
             depth_history = list(self.depth_history[tracking.track_id])
 
-        closing_speed, ttc, ttc_valid, ttc_reason = self._ttc(
-            depth_value,
-            depth_change,
-            tracking.timestamp,
-        )
         segmentation = self._latest_optional(self.segmentation, tracking.timestamp)
         lane = self._latest_optional(self.lanes, tracking.timestamp)
-        segmentation_available = bool(segmentation and segmentation.available)
-        lane_available = bool(lane and lane.available)
+        segmentation_status = self._optional_status(segmentation, tracking.timestamp)
+        lane_status = self._optional_status(lane, tracking.timestamp)
+        segmentation_available = segmentation_status == "fresh"
+        lane_available = lane_status == "fresh"
         if segmentation_available:
             self.metrics["segmentation_available"] += 1
         if lane_available:
@@ -112,6 +113,16 @@ class FusionEngine:
         else:
             self.metrics["depth_missing"] += 1
 
+        closing_speed, ttc, ttc_valid, ttc_reason = self._ttc(
+            depth_value,
+            depth_change,
+            tracking.timestamp,
+            depth_type,
+            depth_change_per_second,
+            depth_status == "stale",
+            depth.trend if depth else "unknown",
+        )
+
         confidence_parts = [tracking.confidence]
         if depth_quality is not None and depth_status == "fresh":
             confidence_parts.append(max(0.0, min(1.0, depth_quality)))
@@ -119,7 +130,9 @@ class FusionEngine:
         speed = math.hypot(tracking.velocity_x, tracking.velocity_y)
         risk_inputs = {
             "depth_available": depth_value is not None,
+            "depth_type": depth_type,
             "depth_trend": depth.trend if depth else "unknown",
+            "depth_change_per_second": depth_change_per_second,
             "approaching": bool(closing_speed is not None and closing_speed > 0),
             "image_velocity_px_per_frame": speed,
             "trajectory_points": len(tracking.trajectory),
@@ -134,8 +147,8 @@ class FusionEngine:
         }
         staleness = {
             "depth": depth_status,
-            "segmentation": self._optional_status(segmentation, tracking.timestamp),
-            "lane": self._optional_status(lane, tracking.timestamp),
+            "segmentation": segmentation_status,
+            "lane": lane_status,
         }
         return FusedTrackRecord(
             frame=tracking.frame,
@@ -146,21 +159,26 @@ class FusionEngine:
             velocity={"x": tracking.velocity_x, "y": tracking.velocity_y},
             trajectory=tracking.trajectory,
             depth=depth_value,
+            depth_type=depth_type,
             depth_quality=depth_quality,
             depth_change=depth_change,
+            depth_change_per_second=depth_change_per_second,
             depth_history=depth_history,
             depth_trend=depth.trend if depth else "unknown",
             closing_speed=closing_speed,
+            closing_speed_type=(
+                "relative_per_frame" if depth_type == "relative" else "metric_per_second"
+            ),
             ttc=ttc,
             ttc_valid=ttc_valid,
             ttc_reason=ttc_reason,
-            lane_relation=lane.lane_relation if lane else None,
-            lane_center_offset=lane.lane_center_offset if lane else None,
-            lane_crossing=lane.lane_crossing if lane else None,
-            lane_conflict=lane.lane_conflict if lane else None,
-            lane_confidence=lane.confidence if lane else None,
-            semantic_context=segmentation.semantic_class if segmentation else None,
-            semantic_confidence=segmentation.confidence if segmentation else None,
+            lane_relation=lane.lane_relation if lane_available else None,
+            lane_center_offset=lane.lane_center_offset if lane_available else None,
+            lane_crossing=lane.lane_crossing if lane_available else None,
+            lane_conflict=lane.lane_conflict if lane_available else None,
+            lane_confidence=lane.confidence if lane_available else None,
+            semantic_context=segmentation.semantic_class if segmentation_available else None,
+            semantic_confidence=segmentation.confidence if segmentation_available else None,
             confidence=confidence,
             risk_inputs=risk_inputs,
             data_age=data_age,
@@ -168,37 +186,63 @@ class FusionEngine:
         )
 
     def _latest_depth(self, tracking: TrackingObservation) -> Optional[DepthObservation]:
-        candidates = [
-            item
-            for item in self.depth_by_track.get(tracking.track_id, [])
-            if item.timestamp <= tracking.timestamp + 1e-6
-        ]
-        return max(candidates, key=lambda item: item.timestamp) if candidates else None
+        observation = self.depth_by_track.get(tracking.track_id)
+        if observation is None or observation.timestamp > tracking.timestamp + 1e-6:
+            return None
+        return observation
 
-    def _ttc(self, depth, depth_change, timestamp):
+    def _ttc(
+        self,
+        depth,
+        depth_change,
+        timestamp,
+        depth_type,
+        depth_change_per_second,
+        depth_stale=False,
+        depth_trend="unknown",
+    ):
+        if depth_stale:
+            self.metrics["invalid_ttc"] += 1
+            self.metrics["invalid_ttc_reasons"]["stale_depth"] += 1
+            return None, None, False, "stale_depth"
         if depth is None or not math.isfinite(depth):
             self.metrics["invalid_ttc"] += 1
             self.metrics["invalid_ttc_reasons"]["missing_depth"] += 1
             return None, None, False, "missing_depth"
+        if depth_type != "metric":
+            self.metrics["invalid_ttc"] += 1
+            self.metrics["invalid_ttc_reasons"]["non_metric_depth"] += 1
+            relative_change = None
+            if depth_change is not None and math.isfinite(depth_change):
+                if depth_trend == "approaching":
+                    relative_change = abs(depth_change)
+                elif depth_trend == "receding":
+                    relative_change = -abs(depth_change)
+            return relative_change, None, False, "non_metric_depth"
+        if not depth_change_per_second:
+            self.metrics["invalid_ttc"] += 1
+            self.metrics["invalid_ttc_reasons"]["depth_change_not_per_second"] += 1
+            return None, None, False, "depth_change_not_per_second"
         if depth_change is None or not math.isfinite(depth_change):
             self.metrics["invalid_ttc"] += 1
             self.metrics["invalid_ttc_reasons"]["missing_depth_change"] += 1
             return None, None, False, "missing_depth_change"
-        if depth_change <= self.config.minimum_closing_speed:
+        if depth_change >= -self.config.minimum_closing_speed:
             self.metrics["invalid_ttc"] += 1
             self.metrics["invalid_ttc_reasons"]["not_approaching"] += 1
-            return depth_change, None, False, "not_approaching"
-        ttc = depth / depth_change
+            return None, None, False, "not_approaching"
+        closing_speed = -depth_change
+        ttc = depth / closing_speed
         if not math.isfinite(ttc) or ttc <= 0:
             self.metrics["invalid_ttc"] += 1
             self.metrics["invalid_ttc_reasons"]["invalid_denominator"] += 1
-            return depth_change, None, False, "invalid_denominator"
+            return closing_speed, None, False, "invalid_denominator"
         if ttc > self.config.maximum_ttc_seconds:
             self.metrics["invalid_ttc"] += 1
             self.metrics["invalid_ttc_reasons"]["outside_horizon"] += 1
-            return depth_change, None, False, "outside_horizon"
+            return closing_speed, None, False, "outside_horizon"
         self.metrics["valid_ttc"] += 1
-        return depth_change, ttc, True, "valid_approaching"
+        return closing_speed, ttc, True, "valid_approaching"
 
     @staticmethod
     def _latest_optional(items, timestamp):
@@ -291,4 +335,6 @@ def parse_depth(row: dict[str, str]) -> DepthObservation:
         trend=row.get("trend", "unknown"),
         source_frame=int(row["depth_frame"]) if row.get("depth_frame") else None,
         source_age_frames=int(row["depth_age_frames"]) if row.get("depth_age_frames") else None,
+        depth_type=row.get("depth_type") or "relative",
+        depth_change_per_second=(row.get("depth_change_per_second", "").strip().lower() == "true"),
     )

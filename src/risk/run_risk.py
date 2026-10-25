@@ -20,11 +20,19 @@ OUTPUT_DIR = Path("runs/risk_eval")
 
 def dump_record(record):
     result = dict(record)
-    for key in ("bbox", "velocity", "trajectory", "depth_history", "risk_inputs", "data_age", "staleness"):
+    for key in (
+        "bbox", "velocity", "trajectory", "depth_history", "semantic_distribution",
+        "risk_inputs", "data_age", "staleness",
+    ):
         try:
-            result[key] = json.loads(result.get(key, "{}" if key != "trajectory" and key != "depth_history" else "[]"))
+            result[key] = json.loads(
+                result.get(
+                    key,
+                    "[]" if key in ("trajectory", "depth_history") else "{}",
+                )
+            )
         except json.JSONDecodeError:
-            result[key] = {} if key not in ("trajectory", "depth_history") else []
+            result[key] = [] if key in ("trajectory", "depth_history") else {}
     return result
 
 
@@ -67,6 +75,8 @@ def main():
     level_counts = Counter()
     approach_count = 0
     valid_ttc_count = 0
+    semantic_context_records = 0
+    stale_semantic_records = 0
     records = 0
     persistence_samples = []
     previous_levels = {}
@@ -77,10 +87,13 @@ def main():
         fieldnames = [
             "frame", "timestamp", "track_id", "class", "bbox", "velocity", "trajectory",
             "depth", "smoothed_depth", "depth_change", "closing_speed", "smoothed_closing_speed",
+            "depth_type", "depth_change_per_second", "closing_speed_type",
             "raw_ttc", "filtered_ttc", "ttc", "ttc_valid", "ttc_reason", "approaching",
             "approach_persistence_frames", "trajectory_stability", "risk_score", "risk_level",
             "risk_confidence", "dominant_risk_reason", "secondary_risk_reasons", "lane_conflict",
-            "semantic_context", "confidence", "risk_inputs", "data_age", "staleness",
+            "semantic_context", "semantic_class_id", "semantic_distribution",
+            "semantic_confidence", "road_contact", "sidewalk_contact",
+            "segmentation_age_frames", "confidence", "risk_inputs", "data_age", "staleness",
         ]
         writer = csv.DictWriter(output_handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -96,8 +109,12 @@ def main():
             records += 1
             if risk["approaching"]:
                 approach_count += 1
-            if str(input_row.get("ttc_valid", "")).lower() == "true":
+            if risk["ttc_valid"]:
                 valid_ttc_count += 1
+            if risk.get("semantic_context") not in (None, "", "unavailable"):
+                semantic_context_records += 1
+            if risk.get("staleness", {}).get("segmentation") == "stale":
+                stale_semantic_records += 1
             track_level_runs[risk["track_id"]] += 1
             if previous_levels.get(risk["track_id"]) != level:
                 if risk["track_id"] in previous_levels:
@@ -110,13 +127,23 @@ def main():
                 "class": risk["class_name"], "bbox": json.dumps(risk["bbox"], separators=(",", ":")),
                 "velocity": json.dumps(risk["velocity"], separators=(",", ":")), "trajectory": json.dumps(risk["trajectory"], separators=(",", ":")),
                 "depth": risk["depth"], "smoothed_depth": risk["smoothed_depth"], "depth_change": risk["depth_change"],
+                "depth_type": risk.get("depth_type", "relative"),
+                "depth_change_per_second": risk.get("depth_change_per_second", False),
+                "closing_speed_type": risk.get("closing_speed_type", "unknown"),
                 "closing_speed": risk["closing_speed"], "smoothed_closing_speed": risk["smoothed_closing_speed"],
                 "raw_ttc": risk["raw_ttc"], "filtered_ttc": risk["filtered_ttc"], "ttc": risk["ttc"],
                 "ttc_valid": risk["ttc_valid"], "ttc_reason": risk["ttc_reason"], "approaching": risk["approaching"],
                 "approach_persistence_frames": risk["approach_persistence_frames"], "trajectory_stability": risk["trajectory_stability"],
                 "risk_score": risk["risk_score"], "risk_level": level, "risk_confidence": risk["risk_confidence"],
                 "dominant_risk_reason": risk["dominant_risk_reason"], "secondary_risk_reasons": json.dumps(risk["secondary_risk_reasons"]),
-                "lane_conflict": risk["lane_conflict"], "semantic_context": risk["semantic_context"], "confidence": risk["confidence"],
+                "lane_conflict": risk["lane_conflict"], "semantic_context": risk["semantic_context"],
+                "semantic_class_id": risk.get("semantic_class_id"),
+                "semantic_distribution": json.dumps(risk.get("semantic_distribution", {}), separators=(",", ":")),
+                "semantic_confidence": risk.get("semantic_confidence"),
+                "road_contact": risk.get("road_contact"),
+                "sidewalk_contact": risk.get("sidewalk_contact"),
+                "segmentation_age_frames": risk.get("segmentation_age_frames"),
+                "confidence": risk["confidence"],
                 "risk_inputs": json.dumps(risk["risk_inputs"], separators=(",", ":")), "data_age": json.dumps(risk["data_age"], separators=(",", ":")),
                 "staleness": json.dumps(risk["staleness"], separators=(",", ":")),
             })
@@ -144,6 +171,8 @@ def main():
         "total_tracks_evaluated": len(engine.states),
         "total_track_time_records": records,
         "valid_ttc_percentage": 100.0 * valid_ttc_count / max(records, 1),
+        "semantic_context_records": semantic_context_records,
+        "stale_semantic_records": stale_semantic_records,
         "approaching_object_percentage": 100.0 * approach_count / max(records, 1),
         "risk_distribution": {
             level: level_counts.get(level, 0)
@@ -156,7 +185,7 @@ def main():
         "processing_fps": records / max(elapsed, 1e-9),
         "risk_config": str(args.config),
         "fused_input": str(args.fused_csv),
-        "segmentation": "unavailable",
+        "segmentation": "fused semantic labels" if semantic_context_records else "unavailable",
         "lane": "unavailable",
         "output_csv": str(output_csv),
         "output_video": str(output_video),
@@ -165,7 +194,7 @@ def main():
     report = args.output_dir / "risk_report.md"
     report.write_text(
         "# Risk Engine Report\n\n"
-        + "Stateful class-aware risk over frozen fusion output. TTC is a relative-depth proxy, not metric seconds.\n\n"
+        + "Stateful class-aware risk over timestamped fusion output. Relative depth is not used to calculate TTC; TTC requires explicitly metric depth and a per-second depth change.\n\n"
         + "```json\n" + json.dumps(summary, indent=2) + "\n```\n"
     )
     print(json.dumps(summary, indent=2))

@@ -1,5 +1,5 @@
-# Relative-depth risk policy. Depth Anything values are not metric meters.
-# TTC is therefore a relative TTC proxy and is never a standalone final-risk decision.
+# Depth Anything values are relative, not metric meters. TTC stays invalid until
+# the input explicitly provides metric depth and a per-second depth change.
 depth_ema_alpha: 0.35
 closing_speed_ema_alpha: 0.35
 ttc_ema_alpha: 0.30

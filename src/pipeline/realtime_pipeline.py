@@ -23,12 +23,15 @@ class VisualizationWorker:
         self.fps = fps
         self.size = size
         self.frames = queue.Queue(maxsize=queue_size)
+        if queue_size < 1:
+            raise ValueError("queue_size must be positive")
         self.stop_requested = False
         self.dropped_frames = 0
         self.written_frames = 0
         self.started = None
         self.finished = None
         self.writer = None
+        self.errors = []
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -44,25 +47,38 @@ class VisualizationWorker:
     def close(self):
         self.stop_requested = True
         self.thread.join(timeout=120.0)
+        if self.thread.is_alive():
+            raise RuntimeError("visualization worker did not stop before timeout")
+        if self.errors:
+            raise RuntimeError(f"visualization worker failed: {self.errors[0]}")
 
     def _run(self):
         self.started = time.perf_counter()
-        self.writer = cv2.VideoWriter(
-            str(self.output_path),
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            self.fps,
-            self.size,
-        )
-        while not self.stop_requested or not self.frames.empty():
-            try:
-                _, _, frame = self.frames.get(timeout=0.05)
-            except queue.Empty:
-                continue
-            self.writer.write(frame)
-            self.written_frames += 1
-            self.frames.task_done()
-        self.writer.release()
-        self.finished = time.perf_counter()
+        try:
+            self.writer = cv2.VideoWriter(
+                str(self.output_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                self.fps,
+                self.size,
+            )
+            if not self.writer.isOpened():
+                raise RuntimeError(f"could not open video writer: {self.output_path}")
+            while not self.stop_requested or not self.frames.empty():
+                try:
+                    _, _, frame = self.frames.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                try:
+                    self.writer.write(frame)
+                    self.written_frames += 1
+                finally:
+                    self.frames.task_done()
+        except Exception as error:
+            self.errors.append(f"{type(error).__name__}: {error}")
+        finally:
+            if self.writer is not None:
+                self.writer.release()
+            self.finished = time.perf_counter()
 
 
 def load_states(path):
@@ -91,7 +107,8 @@ def overlay(frame, states, frame_index):
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         ttc = state.get("filtered_ttc") or "--"
         closing = state.get("smoothed_closing_speed") or "--"
-        label = f"ID {state['track_id']} {state['class']} {level} TTC:{ttc} C:{closing}"
+        semantic = state.get("semantic_context") or "--"
+        label = f"ID {state['track_id']} {state['class']} {level} Sem:{semantic} TTC:{ttc} C:{closing}"
         cv2.putText(frame, label, (x1, max(18, y1 - 6)), 0, 0.43, color, 1, cv2.LINE_AA)
     cv2.putText(frame, f"Perception frame {frame_index}", (20, 32), 0, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
     return frame

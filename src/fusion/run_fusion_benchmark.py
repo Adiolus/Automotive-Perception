@@ -3,12 +3,13 @@ import time
 import json
 import csv
 import numpy as np
+from pathlib import Path
 from semantic_fusion_interface import SceneFusionInterface
 
 def draw_debug_overlay(frame, contexts):
     debug_frame = frame.copy()
     for ctx in contexts:
-        x1, y1, x2, y2 = ctx['bbox']
+        x1, y1, x2, y2 = [int(value) for value in ctx['bbox']]
 
         # Visual styling
         color = (0, 255, 0) if ctx['road_contact'] else (0, 0, 255)
@@ -18,7 +19,8 @@ def draw_debug_overlay(frame, contexts):
         text_lines = [
             f"Trk {ctx['track_id']} | YOLO: {ctx['yolo_class']}",
             f"Sem: {ctx['semantic_class']} (Conf: {ctx['semantic_confidence']:.2f})",
-            f"Depth: {ctx['depth_type']} {ctx['depth_value']:.2f}",
+            f"Depth: {ctx['depth_type']} "
+            f"{ctx['depth_value']:.2f}" if ctx['depth_valid'] else "Depth: unavailable",
             f"Road: {'YES' if ctx['road_contact'] else 'NO'}"
         ]
 
@@ -33,7 +35,9 @@ def run_benchmark():
     fusion = SceneFusionInterface()
     latencies = []
 
-    csv_file = open("runs/fusion_eval/fusion_output.csv", "w", newline='')
+    output_dir = Path("runs/fusion_eval")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_file = (output_dir / "fusion_output.csv").open("w", newline="")
     writer = csv.writer(csv_file)
     writer.writerow(["frame_id", "timestamp", "track_id", "yolo_class", "bbox_x1", "bbox_y1",
                      "bbox_x2", "bbox_y2", "semantic_class", "semantic_confidence", "depth_value",
@@ -59,8 +63,11 @@ def run_benchmark():
                 ctx['frame_id'], ctx['timestamp'], ctx['track_id'], ctx['yolo_class'],
                 ctx['bbox'][0], ctx['bbox'][1], ctx['bbox'][2], ctx['bbox'][3],
                 ctx['semantic_class'], f"{ctx['semantic_confidence']:.2f}",
-                f"{ctx['depth_value']:.2f}", ctx['depth_valid'], ctx['road_contact'],
-                ctx['context_valid'], ctx['segmentation_age']
+                (
+                    f"{ctx['depth_value']:.2f}"
+                    if ctx['depth_valid'] else ""
+                ), ctx['depth_valid'], ctx['road_contact'],
+                ctx['context_valid'], ctx['segmentation_age_frames']
             ])
 
     csv_file.close()
@@ -73,7 +80,7 @@ def run_benchmark():
         "stale_handling": "Supported. Age calculated strictly via frame_id delta."
     }
 
-    with open("runs/fusion_eval/fusion_metrics.json", "w") as f:
+    with (output_dir / "fusion_metrics.json").open("w") as f:
         json.dump(metrics, f, indent=4)
 
 if __name__ == "__main__":

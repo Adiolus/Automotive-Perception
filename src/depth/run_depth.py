@@ -37,7 +37,9 @@ class DepthWorker:
         self.latest_lock = threading.Lock()
         self.inference_count = 0
         self.inference_seconds = 0.0
-        self.errors = []
+        self.inference_latencies_ms = deque(maxlen=2048)
+        self.dropped_requests = 0
+        self.errors = deque(maxlen=32)
         self.stop_requested = False
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -46,9 +48,19 @@ class DepthWorker:
         request = (frame_index, frame_bgr.copy())
         try:
             self.requests.put_nowait(request)
-            return True
         except queue.Full:
-            return False
+            try:
+                self.requests.get_nowait()
+                self.requests.task_done()
+                self.dropped_requests += 1
+            except queue.Empty:
+                pass
+            try:
+                self.requests.put_nowait(request)
+            except queue.Full:
+                self.dropped_requests += 1
+                return False
+        return True
 
     def get_latest(self):
         with self.latest_lock:
@@ -57,6 +69,8 @@ class DepthWorker:
     def close(self):
         self.stop_requested = True
         self.thread.join(timeout=30.0)
+        if self.thread.is_alive():
+            raise RuntimeError("depth worker did not stop before timeout")
 
     def _run(self):
         while not self.stop_requested or not self.requests.empty():
@@ -110,6 +124,7 @@ class DepthWorker:
                     }
                 self.inference_count += 1
                 self.inference_seconds += elapsed
+                self.inference_latencies_ms.append(elapsed * 1000.0)
             except Exception as error:  # keep video/tracker loop alive
                 self.errors.append(f"frame {frame_index}: {error}")
             finally:
@@ -203,7 +218,7 @@ def run_schedule(schedule, args):
             "depth", "depth_quality", "depth_mad", "depth_frame", "depth_age_frames",
             "depth_previous", "depth_change", "trend",
         ])
-        while True:
+        while args.max_frames is None or frame_index < args.max_frames:
             ok, frame = cap.read()
             if not ok:
                 break
@@ -280,16 +295,28 @@ def run_schedule(schedule, args):
         "video_fps": video_fps,
         "frames": frame_index,
         "schedule_interval": schedule,
+        "source_complete": frame_index >= total_frames,
+        "requested_frame_limit": args.max_frames,
         "submitted_depth_requests": submitted,
-        "completed_depth_frames": len(completed_depth_frames),
+        "dropped_depth_requests": worker.dropped_requests,
+        "completed_depth_frames": worker.inference_count,
+        "depth_results_observed_in_loop": len(completed_depth_frames),
         "raw_depth_inference_fps": worker.inference_count / max(worker.inference_seconds, 1e-6),
         "scheduled_depth_update_fps": worker.inference_count / max(frame_index / video_fps, 1e-6),
         "end_to_end_fps": frame_index / max(elapsed, 1e-6),
         "depth_inference_count": worker.inference_count,
         "depth_inference_seconds": worker.inference_seconds,
+        "depth_inference_latency_p50_ms": (
+            float(np.percentile(worker.inference_latencies_ms, 50))
+            if worker.inference_latencies_ms else None
+        ),
+        "depth_inference_latency_p95_ms": (
+            float(np.percentile(worker.inference_latencies_ms, 95))
+            if worker.inference_latencies_ms else None
+        ),
         "depth_frame_percentage": 100.0 * worker.inference_count / max(frame_index, 1),
         "track_rows": rows_written,
-        "worker_errors": worker.errors[:10],
+        "worker_errors": list(worker.errors)[:10],
         "output_directory": str(output_dir),
     }
     (output_dir / "benchmark.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -305,7 +332,10 @@ def main():
     parser.add_argument("--visualize", action="store_true")
     parser.add_argument("--save-cache", action="store_true")
     parser.add_argument("--realtime", action="store_true")
+    parser.add_argument("--max-frames", type=int)
     args = parser.parse_args()
+    if args.max_frames is not None and args.max_frames < 1:
+        parser.error("--max-frames must be positive")
     schedules = (3, 5, 8) if args.benchmark_all else (args.schedule,)
     reports = [run_schedule(schedule, args) for schedule in schedules]
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
